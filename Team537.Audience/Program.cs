@@ -25,92 +25,71 @@ namespace Team537.Audience
         {
             var logger = new TraceLogger();
 
+
             var serviceHost = new AudienceHost(logger);
             serviceHost.Inititalize();
             serviceHost.Start("net.tcp://localhost:8003/PublishingService", "net.tcp://localhost:8004/SubscriptionService");
-            
-            var fmsEventListener = new TcpListener(IPAddress.Any, 8005);
-            fmsEventListener.Start();
 
-            Console.WriteLine("Waiting for connection");
-            while (Console.ReadLine() != "q")
+            var commandHandler = new CommandHandler();
+
+            var cancellationToken = new CancellationTokenSource();
+
+            Task.Factory.StartNew(
+                () =>
+                    {
+                        var fmsEventListener = new TcpListener(IPAddress.Any, 8005);
+                        fmsEventListener.Start();
+                        while (!cancellationToken.Token.IsCancellationRequested)
+                        {
+                            Console.WriteLine("Waiting for connection");
+                            var client = fmsEventListener.AcceptTcpClient();
+                            Task.Factory.StartNew(() => ThreadProc(client, commandHandler), cancellationToken.Token);
+                        }
+                    }, 
+                    cancellationToken.Token);
+
+            Console.WriteLine("Waiting for command");
+
+            var quit = false;
+            while (!quit)
             {
-                var client = fmsEventListener.AcceptTcpClient();
-                ThreadPool.QueueUserWorkItem(ThreadProc, client);
+                var input = Console.ReadLine();
+                switch (input)
+                {
+                    case "q":
+                        cancellationToken.Cancel();
+                        quit = true;
+                        break;
+                    default:
+                        lock (CommandHandler.LockObject)
+                        {
+                            commandHandler.SendCommand(input);
+                        }
+
+                        break;
+                }
+
+                Console.WriteLine("Waiting for command");
             }
             
             serviceHost.Stop();
         }
 
-        private static void ThreadProc(object obj)
+        private static void ThreadProc(TcpClient client, CommandHandler commandHandler)
         {
-            var client = (TcpClient)obj;
-            var logger = new TraceLogger();
-            var publishService = new FMSPublishService(logger);
-
             // Do your work here
             Console.Write("Client connected");
 
-            var eventInfo = new FIRSTEventInfo();
-
-            var matchInfo = new MatchInfo();
-            matchInfo.Auto = true;
-            matchInfo.AutoStartTime = 20; // Settings.Default.AutoTime;
-            matchInfo.ManualStartTime = 25; // Settings.Default.ManualTime;
-            matchInfo.TimeLeft = 90;
-            matchInfo.MatchNumber = 999;
-            matchInfo.BlueAllianceStation1.TeamId = 1;
-            matchInfo.BlueAllianceStation2.TeamId = 2;
-            matchInfo.BlueAllianceStation3.TeamId = 3;
-            matchInfo.RedAllianceStation1.TeamId = 4;
-            matchInfo.RedAllianceStation2.TeamId = 5;
-            matchInfo.RedAllianceStation3.TeamId = 6;
-            matchInfo.Score.IgnoreControllerCounts = true;
-            matchInfo.ResetMatch();
-            matchInfo.SetReady();
- 
             // Receive until client closes connection, indicated by 0 return value
             var streamReader = new StreamReader(client.GetStream());
             string line;
             while ((line = streamReader.ReadLine()) != null)
             {
-                switch (line)
+                Console.WriteLine("Received: {0}", line);
+
+                lock (CommandHandler.LockObject)
                 {
-                    case "auto-start":
-                        publishService.MatchStartAuto(eventInfo.EventId, matchInfo);
-                        break;
-
-                    case "auto-end":
-                        publishService.MatchEndAuto(eventInfo.EventId, matchInfo);
-                        break;
-
-                    case "tele-start":
-                        publishService.MatchStartTeleop(eventInfo.EventId, matchInfo);
-                        break;
-
-                    case "tele-end":
-                        publishService.MatchEndTeleop(eventInfo.EventId, matchInfo);
-                        break;
-
-                    case "warning1":
-                        publishService.MatchTimerWarning1(eventInfo.EventId, matchInfo);
-                        break;
-
-                    case "warning2":
-                        publishService.MatchTimerWarning2(eventInfo.EventId, matchInfo);
-                        break;
-
-                    default:
-                        if (line.StartsWith("time-change"))
-                        {
-                            
-                        }
-                        else if (line.StartsWith("match-change"))
-                        {
-                            
-                        }
-
-                        break;
+                    commandHandler.SendCommand(line);
                 }
             }
         }
